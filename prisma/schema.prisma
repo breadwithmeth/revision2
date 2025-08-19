@@ -1,0 +1,77 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum DocStatus {
+  IMPORTED
+  REVISED
+  EXPORTED
+}
+
+model Warehouse {
+  id   String @id @default(cuid())
+  code String @unique @db.VarChar(191)
+  name String @db.VarChar(255)
+  docs InventoryDocument[]
+}
+
+model InventoryDocument {
+  id            String    @id @default(cuid())
+  externalId    String    @unique @db.VarChar(191) // GUID 1С, идемпотентность
+  onecNumber    String    @db.VarChar(191)
+  onecDate      DateTime
+  warehouseId   String
+  warehouseCode String    @db.VarChar(191)
+  status        DocStatus @default(IMPORTED)
+  version       Int       @default(1) // optimistic lock
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  warehouse Warehouse       @relation(fields: [warehouseId], references: [id])
+  items     InventoryItem[]
+  barcodes  InventoryItemBarcode[]
+
+  @@index([warehouseCode])
+}
+
+model InventoryItem {
+  id           String   @id @default(cuid())
+  documentId   String
+  sku          String   @db.VarChar(191)
+  name         String   @db.VarChar(255)
+  unit         String   @db.VarChar(32)
+  qtyFrom1C    Decimal  @db.Decimal(18, 6)
+  countedQty   Decimal? @db.Decimal(18, 6)
+  correctedQty Decimal? @db.Decimal(18, 6)
+  deltaQty     Decimal? @db.Decimal(18, 6)
+  note         String?  @db.VarChar(255)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @default(now()) @updatedAt
+
+  document InventoryDocument     @relation(fields: [documentId], references: [id])
+  barcodes InventoryItemBarcode[]
+
+  @@unique([documentId, sku])
+}
+
+model InventoryItemBarcode {
+  id         String  @id @default(cuid())
+  documentId String
+  itemId     String
+  barcode    String  @db.VarChar(191)
+  isPrimary  Boolean @default(false)
+
+  document InventoryDocument @relation(fields: [documentId], references: [id])
+  item     InventoryItem     @relation(fields: [itemId], references: [id])
+
+  @@unique([documentId, barcode]) // в рамках документа штрихкод уникален
+  @@index([barcode])
+}
