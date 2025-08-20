@@ -23,12 +23,8 @@ export async function inventoryItemsV2Route(fastify: FastifyInstance) {
         });
       }
 
-      const result = await InventoryServiceV2.updateItemsWithMerge(id, payload);
-      
-      // Если есть конфликты, возвращаем статус 206 (Partial Content)
-      const statusCode = result.conflicts.length > 0 ? 206 : 200;
-      
-      return reply.status(statusCode).send(result);
+  const result = await InventoryServiceV2.updateItemsWithMerge(id, payload);
+  return reply.status(200).send(result);
     } catch (error) {
       const apiError = error as any;
       if (apiError.code) {

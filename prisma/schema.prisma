@@ -11,9 +11,11 @@ datasource db {
 }
 
 enum DocStatus {
+  NEW
   IMPORTED
   REVISED
   EXPORTED
+  EXPORT
 }
 
 model Warehouse {

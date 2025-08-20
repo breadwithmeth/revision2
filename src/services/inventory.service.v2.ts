@@ -17,14 +17,6 @@ export interface UpdateItemsPayloadV2 {
 export interface UpdateResult {
   success: boolean;
   version: number;
-  conflicts: Array<{
-    sku: string;
-    field: string;
-    yourValue: string;
-    currentValue: string;
-    lastModified: string;
-    modifiedBy?: string;
-  }>;
   appliedChanges: number;
 }
 
@@ -84,8 +76,7 @@ export class InventoryServiceV2 {
         throw { code: 'NOT_FOUND', message: 'Document not found' };
       }
 
-      const conflicts: UpdateResult['conflicts'] = [];
-      let appliedChanges = 0;
+  let appliedChanges = 0;
 
       // 2. Обрабатываем каждое изменение
       for (const itemUpdate of payload.items) {
@@ -112,39 +103,7 @@ export class InventoryServiceV2 {
           continue; // Пропускаем несуществующие строки
         }
 
-        // 3. Проверяем конфликты по timestamp
-        const lastKnownModified = itemUpdate.lastKnownModified 
-          ? new Date(itemUpdate.lastKnownModified)
-          : null;
-
-        const currentModified = targetItem.updatedAt;
-        const hasConflict = lastKnownModified && 
-          currentModified > lastKnownModified;
-
-        if (hasConflict) {
-          // Записываем конфликт, но можем все равно применить изменение
-          if (itemUpdate.countedQty !== undefined) {
-            conflicts.push({
-              sku: targetItem.sku,
-              field: 'countedQty',
-              yourValue: itemUpdate.countedQty,
-              currentValue: targetItem.countedQty?.toString() || '',
-              lastModified: currentModified.toISOString(),
-              modifiedBy: targetItem.note || undefined,
-            });
-          }
-
-          if (itemUpdate.correctedQty !== undefined) {
-            conflicts.push({
-              sku: targetItem.sku,
-              field: 'correctedQty',
-              yourValue: itemUpdate.correctedQty,
-              currentValue: targetItem.correctedQty?.toString() || '',
-              lastModified: currentModified.toISOString(),
-              modifiedBy: targetItem.note || undefined,
-            });
-          }
-        }
+    // Конфликты не обрабатываем
 
         // 4. Применяем изменения (стратегия "последний побеждает")
         const updateData: any = {};
@@ -153,18 +112,12 @@ export class InventoryServiceV2 {
         let hasUpdates = false;
 
         if (itemUpdate.countedQty !== undefined) {
-          const base = targetItem.countedQty ?? new Prisma.Decimal(0);
-          const add = new Prisma.Decimal(itemUpdate.countedQty);
-          newCounted = (base as Prisma.Decimal).add(add);
-          updateData.countedQty = newCounted;
+          newCounted = new Prisma.Decimal(itemUpdate.countedQty);
           hasUpdates = true;
         }
-        
+
         if (itemUpdate.correctedQty !== undefined) {
-          const base = targetItem.correctedQty ?? new Prisma.Decimal(0);
-          const add = new Prisma.Decimal(itemUpdate.correctedQty);
-          newCorrected = (base as Prisma.Decimal).add(add);
-          updateData.correctedQty = newCorrected;
+          newCorrected = new Prisma.Decimal(itemUpdate.correctedQty);
           hasUpdates = true;
         }
         
@@ -174,11 +127,7 @@ export class InventoryServiceV2 {
         }
 
         if (hasUpdates) {
-          await tx.inventoryItem.update({
-            where: { id: targetItem.id },
-            data: updateData,
-          });
-          // Логируем изменения устройства
+          // Только логируем изменения устройства, inventoryItem не обновляем
           await (tx as any).inventoryItemChange.create({
             data: {
               documentId: document.id,
@@ -195,8 +144,7 @@ export class InventoryServiceV2 {
 
       return {
         success: true,
-  version: document.version, // уже инкрементирована атомарно
-        conflicts,
+        version: document.version,
         appliedChanges,
       };
     }, {
