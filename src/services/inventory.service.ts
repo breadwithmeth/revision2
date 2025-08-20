@@ -20,6 +20,7 @@ export interface ImportPayload {
 
 export interface UpdateItemsPayload {
   version: number;
+  deviceId?: string;
   items: Array<{
     sku?: string;
     barcode?: string;
@@ -35,181 +36,117 @@ export interface ApiError {
 }
 
 export class InventoryService {
+  // Вспомогательная функция: разрешение id | externalId | onecNumber -> внутренний id
+  private static async resolveDocumentId(db: any, key: string): Promise<string | null> {
+    let d = await db.inventoryDocument.findUnique({ where: { id: key } });
+    if (d) return d.id;
+    try {
+      d = await db.inventoryDocument.findUnique({ where: { externalId: key } });
+      if (d) return d.id;
+    } catch (_) {
+      // ignore if externalId is not unique in schema
+    }
+    d = await db.inventoryDocument.findFirst({ where: { onecNumber: key }, orderBy: { createdAt: 'desc' } });
+    return d ? d.id : null;
+  }
+
   static async importFrom1C(payload: ImportPayload) {
     const startTime = Date.now();
-    console.log(`Starting import for document ${payload.externalId} with ${payload.items.length} items`);
-    
-    try {
-      const result = await prisma.$transaction(async (tx) => {
-        // 1. Upsert warehouse
-        const warehouse = await tx.warehouse.upsert({
-          where: { code: payload.warehouse.code },
-          create: {
-            code: payload.warehouse.code,
-            name: payload.warehouse.name,
-          },
-          update: {
-            name: payload.warehouse.name,
-          },
-        });
-
-        // 2. Upsert document
-        const document = await tx.inventoryDocument.upsert({
-          where: { externalId: payload.externalId },
-          create: {
-            externalId: payload.externalId,
-            onecNumber: payload.onecNumber,
-            onecDate: new Date(payload.onecDate),
-            warehouseId: warehouse.id,
-            warehouseCode: warehouse.code,
-            status: 'IMPORTED',
-            version: 1,
-          },
-          update: {
-            onecNumber: payload.onecNumber,
-            onecDate: new Date(payload.onecDate),
-            warehouseCode: warehouse.code,
-            // version не изменяем при повторном импорте
-          },
-        });
-
-        // 3. Batch process items - сначала все items
-        const itemsToCreate = [];
-        const itemsToUpdate = [];
-
-        for (const itemData of payload.items) {
-          const existingItem = await tx.inventoryItem.findUnique({
-            where: {
-              documentId_sku: {
-                documentId: document.id,
-                sku: itemData.sku,
-              },
-            },
-          });
-
-          if (existingItem) {
-            itemsToUpdate.push({
-              where: { id: existingItem.id },
-              data: {
-                name: itemData.name,
-                unit: itemData.unit,
-                qtyFrom1C: new Prisma.Decimal(itemData.qtyFrom1C),
-              },
-            });
-          } else {
-            itemsToCreate.push({
-              documentId: document.id,
-              sku: itemData.sku,
-              name: itemData.name,
-              unit: itemData.unit,
-              qtyFrom1C: new Prisma.Decimal(itemData.qtyFrom1C),
-            });
-          }
-        }
-
-        // Batch create new items
-        if (itemsToCreate.length > 0) {
-          await tx.inventoryItem.createMany({
-            data: itemsToCreate,
-            skipDuplicates: true,
-          });
-        }
-
-        // Update existing items
-        for (const update of itemsToUpdate) {
-          await tx.inventoryItem.update(update);
-        }
-
-        // 4. Process barcodes - получаем все items снова для получения ID
-        const allItems = await tx.inventoryItem.findMany({
-          where: { documentId: document.id },
-        });
-
-        const barcodesToCreate = [];
-        
-        for (const itemData of payload.items) {
-          const item = allItems.find(i => i.sku === itemData.sku);
-          if (!item) continue;
-
-          // Удаляем старые штрихкоды этого товара
-          await tx.inventoryItemBarcode.deleteMany({
-            where: {
-              documentId: document.id,
-              itemId: item.id,
-            },
-          });
-
-          // Подготавливаем новые штрихкоды
-          for (let i = 0; i < itemData.barcodes.length; i++) {
-            const barcode = itemData.barcodes[i];
-            const isPrimary = i === 0;
-
-            barcodesToCreate.push({
-              documentId: document.id,
-              itemId: item.id,
-              barcode: barcode,
-              isPrimary: isPrimary,
-            });
-          }
-        }
-
-        // Batch create barcodes
-        if (barcodesToCreate.length > 0) {
-          await tx.inventoryItemBarcode.createMany({
-            data: barcodesToCreate,
-            skipDuplicates: true,
-          });
-        }
-
-        // Return full document with items and barcodes
-        return await tx.inventoryDocument.findUnique({
-          where: { id: document.id },
-          include: {
-            warehouse: true,
-            items: {
-              include: {
-                barcodes: true,
-              },
-            },
-          },
-        });
-      }, {
-        maxWait: 20000, // максимальное время ожидания (20 сек)
-        timeout: 30000, // максимальное время выполнения (30 сек)
+    const res = await prisma.$transaction(async (tx) => {
+      // 1) Склад
+      const warehouse = await tx.warehouse.upsert({
+        where: { code: payload.warehouse.code },
+        create: { code: payload.warehouse.code, name: payload.warehouse.name },
+        update: { name: payload.warehouse.name },
       });
-      
-      const endTime = Date.now();
-      console.log(`Import completed for document ${payload.externalId} in ${endTime - startTime}ms`);
-      return result;
-    } catch (error) {
-      const endTime = Date.now();
-      console.error(`Import failed for document ${payload.externalId} after ${endTime - startTime}ms:`, error);
-      throw error;
-    }
-  }  static async getDocument(id: string) {
-    const document = await prisma.inventoryDocument.findUnique({
-      where: { id },
-      include: {
-        warehouse: true,
-        items: {
-          include: {
-            barcodes: true,
-          },
+
+      // 2) Документ
+      const document = await tx.inventoryDocument.upsert({
+        where: { externalId: payload.externalId },
+        create: {
+          externalId: payload.externalId,
+          onecNumber: payload.onecNumber,
+          onecDate: new Date(payload.onecDate),
+          warehouseId: warehouse.id,
+          warehouseCode: warehouse.code,
+          status: 'IMPORTED',
+          version: 1,
         },
-      },
+        update: {
+          onecNumber: payload.onecNumber,
+          onecDate: new Date(payload.onecDate),
+          warehouseCode: warehouse.code,
+        },
+      });
+
+      // 3) Позиции и штрихкоды
+      for (const item of payload.items) {
+        const existing = await tx.inventoryItem.findUnique({
+          where: { documentId_sku: { documentId: document.id, sku: item.sku } },
+        });
+
+        let itemId: string;
+        if (existing) {
+          const updated = await tx.inventoryItem.update({
+            where: { id: existing.id },
+            data: {
+              name: item.name,
+              unit: item.unit,
+              qtyFrom1C: new Prisma.Decimal(item.qtyFrom1C),
+            },
+          });
+          itemId = updated.id;
+        } else {
+          const created = await tx.inventoryItem.create({
+            data: {
+              documentId: document.id,
+              sku: item.sku,
+              name: item.name,
+              unit: item.unit,
+              qtyFrom1C: new Prisma.Decimal(item.qtyFrom1C),
+            },
+          });
+          itemId = created.id;
+        }
+
+        // Пересоздаём штрихкоды для строки
+        await tx.inventoryItemBarcode.deleteMany({ where: { itemId } });
+        if (item.barcodes.length > 0) {
+          const toCreate = item.barcodes.map((b, idx) => ({
+            documentId: document.id,
+            itemId,
+            barcode: b,
+            isPrimary: idx === 0,
+          }));
+          await tx.inventoryItemBarcode.createMany({ data: toCreate, skipDuplicates: true });
+        }
+      }
+
+      const result = await tx.inventoryDocument.findUnique({
+        where: { id: document.id },
+        include: { warehouse: true, items: { include: { barcodes: true } } },
+      });
+      return result!;
+    }, { maxWait: 10000, timeout: 30000 });
+
+    const took = Date.now() - startTime;
+    console.log(`Import of ${payload.externalId} completed in ${took} ms`);
+    return res;
+  }
+
+  static async getDocument(id: string) {
+    const resolvedId = await InventoryService.resolveDocumentId(prisma, id);
+    if (!resolvedId) throw { code: 'NOT_FOUND', message: 'Document not found' } as ApiError;
+    const document = await prisma.inventoryDocument.findUnique({
+      where: { id: resolvedId },
+      include: { warehouse: true, items: { include: { barcodes: true } } },
     });
-
-    if (!document) {
-      throw { code: 'NOT_FOUND', message: 'Document not found' } as ApiError;
-    }
-
+    if (!document) throw { code: 'NOT_FOUND', message: 'Document not found' } as ApiError;
     return document;
   }
 
   static async listWarehouses() {
-    const warehouses = await prisma.warehouse.findMany({
-      orderBy: [{ code: 'asc' }],
-    });
+    const warehouses = await prisma.warehouse.findMany({ orderBy: { code: 'asc' } });
     return warehouses;
   }
 
@@ -232,244 +169,174 @@ export class InventoryService {
           },
         },
       },
-      orderBy: {
-        createdAt: 'desc',
-      },
+      orderBy: { createdAt: 'desc' },
     });
-
     return documents;
   }
 
   static async updateItems(id: string, payload: UpdateItemsPayload) {
     return await prisma.$transaction(async (tx) => {
-      // 1. Check document exists and version
-      const document = await tx.inventoryDocument.findUnique({
-        where: { id },
-      });
-
+      const document = await tx.inventoryDocument.findUnique({ where: { id } });
       if (!document) {
         throw { code: 'NOT_FOUND', message: 'Document not found' } as ApiError;
       }
-
       if (document.version !== payload.version) {
-        throw {
-          code: 'CONFLICT',
-          message: `Version mismatch. Expected ${document.version}, got ${payload.version}`,
-        } as ApiError;
+        throw { code: 'CONFLICT', message: `Version mismatch. Expected ${document.version}, got ${payload.version}` } as ApiError;
       }
 
-      // 2. Process each item update
       for (const itemUpdate of payload.items) {
         let itemId: string;
         let currentItem: any | null = null;
 
         if (itemUpdate.sku) {
-          // Find by SKU
           const item = await tx.inventoryItem.findUnique({
-            where: {
-              documentId_sku: {
-                documentId: id,
-                sku: itemUpdate.sku,
-              },
-            },
+            where: { documentId_sku: { documentId: id, sku: itemUpdate.sku } },
           });
-
           if (!item) {
-            throw {
-              code: 'NOT_FOUND',
-              message: `Item with SKU ${itemUpdate.sku} not found`,
-            } as ApiError;
+            throw { code: 'NOT_FOUND', message: `Item with SKU ${itemUpdate.sku} not found` } as ApiError;
           }
-
           itemId = item.id;
           currentItem = item;
         } else if (itemUpdate.barcode) {
-          // Find by barcode
           const barcode = await tx.inventoryItemBarcode.findUnique({
-            where: {
-              documentId_barcode: {
-                documentId: id,
-                barcode: itemUpdate.barcode,
-              },
-            },
+            where: { documentId_barcode: { documentId: id, barcode: itemUpdate.barcode } },
           });
-
           if (!barcode) {
-            throw {
-              code: 'NOT_FOUND',
-              message: `Barcode ${itemUpdate.barcode} not found`,
-            } as ApiError;
+            throw { code: 'NOT_FOUND', message: `Barcode ${itemUpdate.barcode} not found` } as ApiError;
           }
-
           itemId = barcode.itemId;
           currentItem = await tx.inventoryItem.findUnique({ where: { id: itemId } });
         } else {
-          throw {
-            code: 'BAD_REQUEST',
-            message: 'Either sku or barcode must be provided',
-          } as ApiError;
+          throw { code: 'BAD_REQUEST', message: 'Either sku or barcode must be provided' } as ApiError;
         }
 
-        // 3. Update item
         const updateData: any = {};
+        let newCounted: Prisma.Decimal | undefined;
+        let newCorrected: Prisma.Decimal | undefined;
         if (itemUpdate.countedQty !== undefined) {
           const base = currentItem?.countedQty ?? new Prisma.Decimal(0);
           const add = new Prisma.Decimal(itemUpdate.countedQty);
-          updateData.countedQty = (base as Prisma.Decimal).add(add);
+          newCounted = (base as Prisma.Decimal).add(add);
+          updateData.countedQty = newCounted;
         }
         if (itemUpdate.correctedQty !== undefined) {
           const base = currentItem?.correctedQty ?? new Prisma.Decimal(0);
           const add = new Prisma.Decimal(itemUpdate.correctedQty);
-          updateData.correctedQty = (base as Prisma.Decimal).add(add);
+          newCorrected = (base as Prisma.Decimal).add(add);
+          updateData.correctedQty = newCorrected;
         }
         if (itemUpdate.note !== undefined) {
           updateData.note = itemUpdate.note;
         }
 
-        await tx.inventoryItem.update({
-          where: { id: itemId },
-          data: updateData,
-        });
+        await tx.inventoryItem.update({ where: { id: itemId }, data: updateData });
+
+    if (itemUpdate.countedQty !== undefined || itemUpdate.correctedQty !== undefined || itemUpdate.note !== undefined) {
+          await (tx as any).inventoryItemChange.create({
+            data: {
+              documentId: id,
+              itemId,
+              deviceId: payload.deviceId || 'unknown',
+      countedQty: newCounted ?? null,
+      correctedQty: newCorrected ?? null,
+              note: itemUpdate.note,
+            },
+          });
+        }
       }
 
-      // 4. Increment document version
       const updatedDocument = await tx.inventoryDocument.update({
         where: { id },
         data: { version: { increment: 1 } },
-        include: {
-          warehouse: true,
-          items: {
-            include: {
-              barcodes: true,
-            },
-          },
-        },
+        include: { warehouse: true, items: { include: { barcodes: true } } },
       });
-
       return updatedDocument;
-    }, {
-      maxWait: 10000,
-      timeout: 15000,
-    });
+    }, { maxWait: 10000, timeout: 15000 });
   }
 
   static async revise(id: string) {
     return await prisma.$transaction(async (tx) => {
-      // 1. Check document exists and status
-      const document = await tx.inventoryDocument.findUnique({
-        where: { id },
-        include: { items: true },
-      });
-
+      const document = await tx.inventoryDocument.findUnique({ where: { id }, include: { items: true } });
       if (!document) {
         throw { code: 'NOT_FOUND', message: 'Document not found' } as ApiError;
       }
 
-      if (document.status !== 'IMPORTED') {
-        throw {
-          code: 'UNPROCESSABLE_ENTITY',
-          message: 'Document must be in IMPORTED status',
-        } as ApiError;
-      }
-
-      // 2. Calculate deltas for each item
       for (const item of document.items) {
-        const effective = item.correctedQty || item.countedQty;
-        let deltaQty: Prisma.Decimal | null = null;
-
-        if (effective) {
-          deltaQty = effective.sub(item.qtyFrom1C);
-        }
-
-        await tx.inventoryItem.update({
-          where: { id: item.id },
-          data: { deltaQty },
-        });
+        const counted = item.countedQty ?? new Prisma.Decimal(0);
+        const correctedBase = item.correctedQty ?? counted;
+        const delta = (correctedBase as Prisma.Decimal).sub(item.qtyFrom1C);
+        await tx.inventoryItem.update({ where: { id: item.id }, data: { deltaQty: delta } });
       }
 
-      // 3. Update document status and version
-      const updatedDocument = await tx.inventoryDocument.update({
-        where: { id },
-        data: {
-          status: 'REVISED',
-          version: { increment: 1 },
-        },
+      const updated = await tx.inventoryDocument.update({
+        where: { id: document.id },
+        data: { status: 'REVISED', version: { increment: 1 } },
       });
-
-      return {
-        id: updatedDocument.id,
-        status: updatedDocument.status,
-        version: updatedDocument.version,
-      };
-    }, {
-      maxWait: 10000,
-      timeout: 15000,
-    });
+      return { success: true, status: updated.status, version: updated.version };
+    }, { maxWait: 10000, timeout: 15000 });
   }
 
   static async exportFor1C(id: string) {
-    const document = await prisma.inventoryDocument.findFirst({
-      where: { onecNumber: id },
-      include: {
-        warehouse: true,
-        items: {
-          include: {
-            barcodes: true,
-          },
-        },
-      },
-    });
+    // Разрешаем id | externalId | onecNumber
+    const resolvedId = await InventoryService.resolveDocumentId(prisma, id);
+    if (!resolvedId) throw { code: 'NOT_FOUND', message: 'Document not found' } as ApiError;
 
-    if (!document) {
-      throw { code: 'NOT_FOUND', message: 'Document not found' } as ApiError;
+    const document = await prisma.inventoryDocument.findUnique({
+      where: { id: resolvedId },
+      include: { warehouse: true, items: { include: { barcodes: true } } },
+    });
+    if (!document) throw { code: 'NOT_FOUND', message: 'Document not found' } as ApiError;
+
+    // Берём последние зафиксированные количества из таблицы InventoryItemChange
+    const changes: Array<{ itemId: string; countedQty: Prisma.Decimal | null; correctedQty: Prisma.Decimal | null; createdAt: Date }>
+      = await (prisma as any).inventoryItemChange.findMany({
+        where: { documentId: document.id },
+        select: { itemId: true, countedQty: true, correctedQty: true, createdAt: true },
+        orderBy: { createdAt: 'asc' },
+      });
+
+    const latest = new Map<string, { counted?: Prisma.Decimal; corrected?: Prisma.Decimal }>();
+    for (const ch of changes) {
+      const state = latest.get(ch.itemId) || {};
+      if (ch.countedQty !== null) state.counted = ch.countedQty;
+      if (ch.correctedQty !== null) state.corrected = ch.correctedQty;
+      latest.set(ch.itemId, state);
     }
 
-    // Убираем проверку статуса - можно экспортировать в любом статусе
-
-    const exportData = {
+    return {
       externalId: document.externalId,
-      warehouse: {
-        code: document.warehouse.code,
-      },
-      items: document.items.map((item) => ({
-        sku: item.sku,
-        unit: item.unit,
-        correctedQty: (item.correctedQty || item.countedQty)?.toString() || '0',
-        deltaQty: item.deltaQty?.toString() || '0',
-        barcodes: item.barcodes.map((b) => b.barcode),
-      })),
+      warehouse: { code: document.warehouse.code },
+      items: document.items.map((item) => {
+        const last = latest.get(item.id) || {};
+        const countedFinal = last.counted ?? item.countedQty ?? new Prisma.Decimal(0);
+        const correctedBase = last.corrected ?? item.correctedQty ?? countedFinal;
+        const correctedFinal = correctedBase;
+        const deltaFinal = correctedFinal.sub(item.qtyFrom1C);
+        return {
+          sku: item.sku,
+          unit: item.unit,
+          correctedQty: correctedFinal.toString(),
+          deltaQty: deltaFinal.toString(),
+          barcodes: item.barcodes.map((b) => b.barcode),
+        };
+      }),
     };
-
-    return exportData;
   }
 
   static async ack(id: string) {
     return await prisma.$transaction(async (tx) => {
-      const document = await tx.inventoryDocument.findUnique({
-        where: { id },
-      });
+      const resolvedId = await InventoryService.resolveDocumentId(tx, id);
+      if (!resolvedId) throw { code: 'NOT_FOUND', message: 'Document not found' } as ApiError;
 
-      if (!document) {
-        throw { code: 'NOT_FOUND', message: 'Document not found' } as ApiError;
-      }
+      const document = await tx.inventoryDocument.findUnique({ where: { id: resolvedId } });
+      if (!document) throw { code: 'NOT_FOUND', message: 'Document not found' } as ApiError;
 
       if (document.status !== 'REVISED' && document.status !== 'EXPORTED') {
-        throw {
-          code: 'UNPROCESSABLE_ENTITY',
-          message: 'Document must be in REVISED or EXPORTED status',
-        } as ApiError;
+        throw { code: 'UNPROCESSABLE_ENTITY', message: 'Document must be in REVISED or EXPORTED status' } as ApiError;
       }
 
-      // Set to EXPORTED (idempotent)
-      await tx.inventoryDocument.update({
-        where: { id },
-        data: { status: 'EXPORTED' },
-      });
-
+      await tx.inventoryDocument.update({ where: { id: document.id }, data: { status: 'EXPORTED' } });
       return { success: true };
-    }, {
-      maxWait: 5000,
-      timeout: 10000,
-    });
+    }, { maxWait: 5000, timeout: 10000 });
   }
 }

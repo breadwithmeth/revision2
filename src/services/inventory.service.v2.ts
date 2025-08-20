@@ -148,19 +148,23 @@ export class InventoryServiceV2 {
 
         // 4. Применяем изменения (стратегия "последний побеждает")
         const updateData: any = {};
+        let newCounted: Prisma.Decimal | undefined;
+        let newCorrected: Prisma.Decimal | undefined;
         let hasUpdates = false;
 
         if (itemUpdate.countedQty !== undefined) {
           const base = targetItem.countedQty ?? new Prisma.Decimal(0);
           const add = new Prisma.Decimal(itemUpdate.countedQty);
-          updateData.countedQty = (base as Prisma.Decimal).add(add);
+          newCounted = (base as Prisma.Decimal).add(add);
+          updateData.countedQty = newCounted;
           hasUpdates = true;
         }
         
         if (itemUpdate.correctedQty !== undefined) {
           const base = targetItem.correctedQty ?? new Prisma.Decimal(0);
           const add = new Prisma.Decimal(itemUpdate.correctedQty);
-          updateData.correctedQty = (base as Prisma.Decimal).add(add);
+          newCorrected = (base as Prisma.Decimal).add(add);
+          updateData.correctedQty = newCorrected;
           hasUpdates = true;
         }
         
@@ -173,6 +177,17 @@ export class InventoryServiceV2 {
           await tx.inventoryItem.update({
             where: { id: targetItem.id },
             data: updateData,
+          });
+          // Логируем изменения устройства
+          await (tx as any).inventoryItemChange.create({
+            data: {
+              documentId: document.id,
+              itemId: targetItem.id,
+              deviceId: payload.deviceId || 'unknown',
+              countedQty: newCounted ?? null,
+              correctedQty: newCorrected ?? null,
+              note: itemUpdate.note,
+            },
           });
           appliedChanges++;
         }
