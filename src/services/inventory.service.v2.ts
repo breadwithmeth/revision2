@@ -29,11 +29,39 @@ export interface UpdateResult {
 }
 
 export class InventoryServiceV2 {
+  // Универсальное разрешение документа по ключу: id | externalId | onecNumber
+  private static async resolveDocumentId(db: any, key: string): Promise<string | null> {
+    // 1) Пытаемся как внутренний id
+    let doc = await db.inventoryDocument.findUnique({ where: { id: key } });
+    if (doc) return doc.id;
+
+    // 2) Пытаемся как externalId (предполагается уникальность)
+    try {
+      doc = await db.inventoryDocument.findUnique({ where: { externalId: key } });
+      if (doc) return doc.id;
+    } catch (_) {
+      // ignore if not unique in schema
+    }
+
+    // 3) Пытаемся как onecNumber (может быть не уникальным) — берём самый свежий
+    doc = await db.inventoryDocument.findFirst({
+      where: { onecNumber: key },
+      orderBy: { createdAt: 'desc' },
+    });
+    return doc ? doc.id : null;
+  }
+
   static async updateItemsWithMerge(id: string, payload: UpdateItemsPayloadV2): Promise<UpdateResult> {
     return await prisma.$transaction(async (tx) => {
-      // 1. Проверяем версию документа
+      // 1. Разрешаем идентификатор (id | externalId | onecNumber) -> внутренний id
+      const resolvedId = await InventoryServiceV2.resolveDocumentId(tx, id);
+      if (!resolvedId) {
+        throw { code: 'NOT_FOUND', message: 'Document not found' };
+      }
+
+      // 2. Проверяем версию документа
       const document = await tx.inventoryDocument.findUnique({
-        where: { id },
+        where: { id: resolvedId },
         include: { items: true },
       });
 
@@ -140,7 +168,7 @@ export class InventoryServiceV2 {
 
       // 5. Обновляем версию документа
       const updatedDocument = await tx.inventoryDocument.update({
-        where: { id },
+        where: { id: document.id },
         data: { version: { increment: 1 } },
       });
 
@@ -158,8 +186,13 @@ export class InventoryServiceV2 {
 
   // Метод для получения изменений с timestamp
   static async getDocumentWithTimestamps(id: string) {
+    const resolvedId = await InventoryServiceV2.resolveDocumentId(prisma, id);
+    if (!resolvedId) {
+      throw { code: 'NOT_FOUND', message: 'Document not found' };
+    }
+
     const document = await prisma.inventoryDocument.findUnique({
-      where: { id },
+      where: { id: resolvedId },
       include: {
         warehouse: true,
         items: {
