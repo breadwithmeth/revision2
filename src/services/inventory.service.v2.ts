@@ -86,11 +86,11 @@ export class InventoryServiceV2 {
         // Находим целевую строку
         if (itemUpdate.sku) {
           targetItem = document.items.find(item => item.sku === itemUpdate.sku);
-        } else if (itemUpdate.barcode) {
+  } else if (itemUpdate.barcode) {
           const barcode = await tx.inventoryItemBarcode.findUnique({
             where: {
               documentId_barcode: {
-                documentId: id,
+    documentId: document.id,
                 barcode: itemUpdate.barcode,
               },
             },
