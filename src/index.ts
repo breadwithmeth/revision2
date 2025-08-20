@@ -13,6 +13,25 @@ const PORT = parseInt(process.env.PORT || '3000');
 
 const fastify = Fastify({ logger: false });
 
+// CORS: разрешить запросы с любого сайта (без внешних зависимостей)
+fastify.addHook('onSend', async (request, reply, payload) => {
+  reply.header('Access-Control-Allow-Origin', '*');
+  reply.header('Access-Control-Allow-Methods', 'GET,POST,PATCH,PUT,DELETE,OPTIONS');
+  reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  reply.header('Access-Control-Max-Age', '86400');
+  return payload;
+});
+
+fastify.options('*', async (request, reply) => {
+  reply
+    .header('Access-Control-Allow-Origin', '*')
+    .header('Access-Control-Allow-Methods', 'GET,POST,PATCH,PUT,DELETE,OPTIONS')
+    .header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+    .header('Access-Control-Max-Age', '86400')
+    .status(204)
+    .send();
+});
+
 // Регистрация роутов
 fastify.register(onecImportRoute);
 fastify.register(inventoryGetRoute);
