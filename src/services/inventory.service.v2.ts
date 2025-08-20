@@ -150,6 +150,9 @@ export class InventoryServiceV2 {
         conflicts,
         appliedChanges,
       };
+    }, {
+      maxWait: 10000,
+      timeout: 15000,
     });
   }
 

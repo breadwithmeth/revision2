@@ -36,104 +36,157 @@ export interface ApiError {
 
 export class InventoryService {
   static async importFrom1C(payload: ImportPayload) {
-    return await prisma.$transaction(async (tx) => {
-      // 1. Upsert warehouse
-      const warehouse = await tx.warehouse.upsert({
-        where: { code: payload.warehouse.code },
-        create: {
-          code: payload.warehouse.code,
-          name: payload.warehouse.name,
-        },
-        update: {
-          name: payload.warehouse.name,
-        },
-      });
-
-      // 2. Upsert document
-      const document = await tx.inventoryDocument.upsert({
-        where: { externalId: payload.externalId },
-        create: {
-          externalId: payload.externalId,
-          onecNumber: payload.onecNumber,
-          onecDate: new Date(payload.onecDate),
-          warehouseId: warehouse.id,
-          warehouseCode: warehouse.code,
-          status: 'IMPORTED',
-          version: 1,
-        },
-        update: {
-          onecNumber: payload.onecNumber,
-          onecDate: new Date(payload.onecDate),
-          warehouseCode: warehouse.code,
-          // version не изменяем при повторном импорте
-        },
-      });
-
-      // 3. Process items
-      for (const itemData of payload.items) {
-        const item = await tx.inventoryItem.upsert({
-          where: {
-            documentId_sku: {
-              documentId: document.id,
-              sku: itemData.sku,
-            },
-          },
+    const startTime = Date.now();
+    console.log(`Starting import for document ${payload.externalId} with ${payload.items.length} items`);
+    
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        // 1. Upsert warehouse
+        const warehouse = await tx.warehouse.upsert({
+          where: { code: payload.warehouse.code },
           create: {
-            documentId: document.id,
-            sku: itemData.sku,
-            name: itemData.name,
-            unit: itemData.unit,
-            qtyFrom1C: new Prisma.Decimal(itemData.qtyFrom1C),
+            code: payload.warehouse.code,
+            name: payload.warehouse.name,
           },
           update: {
-            name: itemData.name,
-            unit: itemData.unit,
-            qtyFrom1C: new Prisma.Decimal(itemData.qtyFrom1C),
+            name: payload.warehouse.name,
           },
         });
 
-        // 4. Process barcodes
-        for (let i = 0; i < itemData.barcodes.length; i++) {
-          const barcode = itemData.barcodes[i];
-          const isPrimary = i === 0;
+        // 2. Upsert document
+        const document = await tx.inventoryDocument.upsert({
+          where: { externalId: payload.externalId },
+          create: {
+            externalId: payload.externalId,
+            onecNumber: payload.onecNumber,
+            onecDate: new Date(payload.onecDate),
+            warehouseId: warehouse.id,
+            warehouseCode: warehouse.code,
+            status: 'IMPORTED',
+            version: 1,
+          },
+          update: {
+            onecNumber: payload.onecNumber,
+            onecDate: new Date(payload.onecDate),
+            warehouseCode: warehouse.code,
+            // version не изменяем при повторном импорте
+          },
+        });
 
-          await tx.inventoryItemBarcode.upsert({
+        // 3. Batch process items - сначала все items
+        const itemsToCreate = [];
+        const itemsToUpdate = [];
+
+        for (const itemData of payload.items) {
+          const existingItem = await tx.inventoryItem.findUnique({
             where: {
-              documentId_barcode: {
+              documentId_sku: {
                 documentId: document.id,
-                barcode: barcode,
+                sku: itemData.sku,
               },
             },
-            create: {
+          });
+
+          if (existingItem) {
+            itemsToUpdate.push({
+              where: { id: existingItem.id },
+              data: {
+                name: itemData.name,
+                unit: itemData.unit,
+                qtyFrom1C: new Prisma.Decimal(itemData.qtyFrom1C),
+              },
+            });
+          } else {
+            itemsToCreate.push({
+              documentId: document.id,
+              sku: itemData.sku,
+              name: itemData.name,
+              unit: itemData.unit,
+              qtyFrom1C: new Prisma.Decimal(itemData.qtyFrom1C),
+            });
+          }
+        }
+
+        // Batch create new items
+        if (itemsToCreate.length > 0) {
+          await tx.inventoryItem.createMany({
+            data: itemsToCreate,
+            skipDuplicates: true,
+          });
+        }
+
+        // Update existing items
+        for (const update of itemsToUpdate) {
+          await tx.inventoryItem.update(update);
+        }
+
+        // 4. Process barcodes - получаем все items снова для получения ID
+        const allItems = await tx.inventoryItem.findMany({
+          where: { documentId: document.id },
+        });
+
+        const barcodesToCreate = [];
+        
+        for (const itemData of payload.items) {
+          const item = allItems.find(i => i.sku === itemData.sku);
+          if (!item) continue;
+
+          // Удаляем старые штрихкоды этого товара
+          await tx.inventoryItemBarcode.deleteMany({
+            where: {
+              documentId: document.id,
+              itemId: item.id,
+            },
+          });
+
+          // Подготавливаем новые штрихкоды
+          for (let i = 0; i < itemData.barcodes.length; i++) {
+            const barcode = itemData.barcodes[i];
+            const isPrimary = i === 0;
+
+            barcodesToCreate.push({
               documentId: document.id,
               itemId: item.id,
               barcode: barcode,
               isPrimary: isPrimary,
-            },
-            update: {
-              itemId: item.id,
-              isPrimary: isPrimary,
-            },
+            });
+          }
+        }
+
+        // Batch create barcodes
+        if (barcodesToCreate.length > 0) {
+          await tx.inventoryItemBarcode.createMany({
+            data: barcodesToCreate,
+            skipDuplicates: true,
           });
         }
-      }
 
-      // Return full document with items and barcodes
-      return await tx.inventoryDocument.findUnique({
-        where: { id: document.id },
-        include: {
-          warehouse: true,
-          items: {
-            include: {
-              barcodes: true,
+        // Return full document with items and barcodes
+        return await tx.inventoryDocument.findUnique({
+          where: { id: document.id },
+          include: {
+            warehouse: true,
+            items: {
+              include: {
+                barcodes: true,
+              },
             },
           },
-        },
+        });
+      }, {
+        maxWait: 20000, // максимальное время ожидания (20 сек)
+        timeout: 30000, // максимальное время выполнения (30 сек)
       });
-    });
-  }
-
-  static async getDocument(id: string) {
+      
+      const endTime = Date.now();
+      console.log(`Import completed for document ${payload.externalId} in ${endTime - startTime}ms`);
+      return result;
+    } catch (error) {
+      const endTime = Date.now();
+      console.error(`Import failed for document ${payload.externalId} after ${endTime - startTime}ms:`, error);
+      throw error;
+    }
+  }  static async getDocument(id: string) {
     const document = await prisma.inventoryDocument.findUnique({
       where: { id },
       include: {
@@ -280,6 +333,9 @@ export class InventoryService {
       });
 
       return updatedDocument;
+    }, {
+      maxWait: 10000,
+      timeout: 15000,
     });
   }
 
@@ -331,6 +387,9 @@ export class InventoryService {
         status: updatedDocument.status,
         version: updatedDocument.version,
       };
+    }, {
+      maxWait: 10000,
+      timeout: 15000,
     });
   }
 
@@ -399,6 +458,9 @@ export class InventoryService {
       });
 
       return { success: true };
+    }, {
+      maxWait: 5000,
+      timeout: 10000,
     });
   }
 }
