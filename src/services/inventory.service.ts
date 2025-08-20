@@ -206,6 +206,13 @@ export class InventoryService {
     return document;
   }
 
+  static async listWarehouses() {
+    const warehouses = await prisma.warehouse.findMany({
+      orderBy: [{ code: 'asc' }],
+    });
+    return warehouses;
+  }
+
   static async getDocumentsByWarehouse(warehouseCode: string) {
     const documents = await prisma.inventoryDocument.findMany({
       where: { warehouseCode },

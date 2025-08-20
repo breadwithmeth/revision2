@@ -8,6 +8,7 @@ import { inventoryItemsV2Route } from './routes/inventory.items.v2.js';
 import { inventoryReviseRoute } from './routes/inventory.revise.js';
 import { onecExportRoute } from './routes/onec.export.js';
 import { onecAckRoute } from './routes/onec.ack.js';
+import { warehouseListRoute } from './routes/warehouse.list.js';
 
 const PORT = parseInt(process.env.PORT || '3000');
 
@@ -41,6 +42,7 @@ fastify.register(inventoryItemsV2Route);
 fastify.register(inventoryReviseRoute);
 fastify.register(onecExportRoute);
 fastify.register(onecAckRoute);
+fastify.register(warehouseListRoute);
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {
