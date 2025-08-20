@@ -394,8 +394,8 @@ export class InventoryService {
   }
 
   static async exportFor1C(id: string) {
-    const document = await prisma.inventoryDocument.findUnique({
-      where: { id },
+    const document = await prisma.inventoryDocument.findFirst({
+      where: { onecNumber: id },
       include: {
         warehouse: true,
         items: {
