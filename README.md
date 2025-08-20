@@ -195,9 +195,9 @@ curl http://localhost:3000/inventory-documents/warehouse/MAIN
 
 ### 5. Экспорт для 1С
 
-**GET** `/onec/inventory-documents/:id/export`
+**POST** `/onec/inventory-documents/:id/export`
 
-Возвращает данные для экспорта в 1С (только после revise).
+Возвращает данные для экспорта в 1С. Можно выполнять независимо от статуса документа.
 
 **Ответ:**
 ```json
@@ -298,7 +298,7 @@ curl -X PATCH http://localhost:3000/inventory-documents/{DOCUMENT_ID}/items \
 curl -X POST http://localhost:3000/inventory-documents/{DOCUMENT_ID}/revise
 
 # 5. Экспорт для 1С
-curl http://localhost:3000/onec/inventory-documents/{DOCUMENT_ID}/export
+curl -X POST http://localhost:3000/onec/inventory-documents/{DOCUMENT_ID}/export
 
 # 6. Подтверждение от 1С
 curl -X POST http://localhost:3000/onec/inventory-documents/{DOCUMENT_ID}/ack

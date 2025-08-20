@@ -410,12 +410,7 @@ export class InventoryService {
       throw { code: 'NOT_FOUND', message: 'Document not found' } as ApiError;
     }
 
-    if (document.status !== 'REVISED') {
-      throw {
-        code: 'UNPROCESSABLE_ENTITY',
-        message: 'Document must be in REVISED status',
-      } as ApiError;
-    }
+    // Убираем проверку статуса - можно экспортировать в любом статусе
 
     const exportData = {
       externalId: document.externalId,

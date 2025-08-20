@@ -79,7 +79,7 @@ curl -X POST http://localhost:3000/inventory-documents/{DOCUMENT_ID}/revise
 ## 5. Экспорт для 1С
 
 ```bash
-curl http://localhost:3000/onec/inventory-documents/{DOCUMENT_ID}/export
+curl -X POST http://localhost:3000/onec/inventory-documents/{DOCUMENT_ID}/export
 ```
 
 ## 6. Подтверждение от 1С
@@ -111,7 +111,7 @@ http PATCH localhost:3000/inventory-documents/{DOCUMENT_ID}/items \
 http POST localhost:3000/inventory-documents/{DOCUMENT_ID}/revise
 
 # Экспорт
-http GET localhost:3000/onec/inventory-documents/{DOCUMENT_ID}/export
+http POST localhost:3000/onec/inventory-documents/{DOCUMENT_ID}/export
 
 # Подтверждение
 http POST localhost:3000/onec/inventory-documents/{DOCUMENT_ID}/ack
