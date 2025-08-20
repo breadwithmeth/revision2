@@ -2,8 +2,8 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { InventoryService, ApiError } from '../services/inventory.service.js';
 
 export async function onecExportRoute(fastify: FastifyInstance) {
-  fastify.post('/onec/inventory-documents/:id/export', async (request: FastifyRequest, reply: FastifyReply) => {
-    try {
+fastify.get('/onec/inventory-documents/:id/export', async (request: FastifyRequest, reply: FastifyReply) => {
+        try {
       const { id } = request.params as { id: string };
 
       if (!id) {
