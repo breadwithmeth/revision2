@@ -261,6 +261,7 @@ export class InventoryService {
       // 2. Process each item update
       for (const itemUpdate of payload.items) {
         let itemId: string;
+        let currentItem: any | null = null;
 
         if (itemUpdate.sku) {
           // Find by SKU
@@ -281,6 +282,7 @@ export class InventoryService {
           }
 
           itemId = item.id;
+          currentItem = item;
         } else if (itemUpdate.barcode) {
           // Find by barcode
           const barcode = await tx.inventoryItemBarcode.findUnique({
@@ -300,6 +302,7 @@ export class InventoryService {
           }
 
           itemId = barcode.itemId;
+          currentItem = await tx.inventoryItem.findUnique({ where: { id: itemId } });
         } else {
           throw {
             code: 'BAD_REQUEST',
@@ -310,10 +313,14 @@ export class InventoryService {
         // 3. Update item
         const updateData: any = {};
         if (itemUpdate.countedQty !== undefined) {
-          updateData.countedQty = new Prisma.Decimal(itemUpdate.countedQty);
+          const base = currentItem?.countedQty ?? new Prisma.Decimal(0);
+          const add = new Prisma.Decimal(itemUpdate.countedQty);
+          updateData.countedQty = (base as Prisma.Decimal).add(add);
         }
         if (itemUpdate.correctedQty !== undefined) {
-          updateData.correctedQty = new Prisma.Decimal(itemUpdate.correctedQty);
+          const base = currentItem?.correctedQty ?? new Prisma.Decimal(0);
+          const add = new Prisma.Decimal(itemUpdate.correctedQty);
+          updateData.correctedQty = (base as Prisma.Decimal).add(add);
         }
         if (itemUpdate.note !== undefined) {
           updateData.note = itemUpdate.note;

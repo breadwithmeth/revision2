@@ -59,21 +59,29 @@ export class InventoryServiceV2 {
         throw { code: 'NOT_FOUND', message: 'Document not found' };
       }
 
-      // 2. Проверяем версию документа
+      // 2. Оптимистическая блокировка: атомарно инкрементируем версию, если она совпадает с переданной
+    //   const bump = await tx.inventoryDocument.updateMany({
+    //     where: { id: resolvedId, version: payload.version },
+    //     data: { version: { increment: 1 } },
+    //   });
+    //   if (bump.count === 0) {
+    //     const current = await tx.inventoryDocument.findUnique({
+    //       where: { id: resolvedId },
+    //       select: { version: true },
+    //     });
+    //     throw {
+    //       code: 'CONFLICT',
+    //       message: `Document version mismatch. Current ${current?.version}, provided ${payload.version}`,
+    //     };
+    //   }
+
+      // Загружаем документ после успешного bump
       const document = await tx.inventoryDocument.findUnique({
         where: { id: resolvedId },
         include: { items: true },
       });
-
       if (!document) {
         throw { code: 'NOT_FOUND', message: 'Document not found' };
-      }
-
-      if (document.version !== payload.version) {
-        throw {
-          code: 'CONFLICT',
-          message: `Document version mismatch. Expected ${document.version}, got ${payload.version}`,
-        };
       }
 
       const conflicts: UpdateResult['conflicts'] = [];
@@ -143,12 +151,16 @@ export class InventoryServiceV2 {
         let hasUpdates = false;
 
         if (itemUpdate.countedQty !== undefined) {
-          updateData.countedQty = new Prisma.Decimal(itemUpdate.countedQty);
+          const base = targetItem.countedQty ?? new Prisma.Decimal(0);
+          const add = new Prisma.Decimal(itemUpdate.countedQty);
+          updateData.countedQty = (base as Prisma.Decimal).add(add);
           hasUpdates = true;
         }
         
         if (itemUpdate.correctedQty !== undefined) {
-          updateData.correctedQty = new Prisma.Decimal(itemUpdate.correctedQty);
+          const base = targetItem.correctedQty ?? new Prisma.Decimal(0);
+          const add = new Prisma.Decimal(itemUpdate.correctedQty);
+          updateData.correctedQty = (base as Prisma.Decimal).add(add);
           hasUpdates = true;
         }
         
@@ -166,15 +178,9 @@ export class InventoryServiceV2 {
         }
       }
 
-      // 5. Обновляем версию документа
-      const updatedDocument = await tx.inventoryDocument.update({
-        where: { id: document.id },
-        data: { version: { increment: 1 } },
-      });
-
       return {
         success: true,
-        version: updatedDocument.version,
+  version: document.version, // уже инкрементирована атомарно
         conflicts,
         appliedChanges,
       };
