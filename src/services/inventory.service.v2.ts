@@ -43,115 +43,230 @@ export class InventoryServiceV2 {
     return doc ? doc.id : null;
   }
 
-  static async updateItemsWithMerge(id: string, payload: UpdateItemsPayloadV2): Promise<UpdateResult> {
-    return await prisma.$transaction(async (tx) => {
-      // 1. Разрешаем идентификатор (id | externalId | onecNumber) -> внутренний id
-      const resolvedId = await InventoryServiceV2.resolveDocumentId(tx, id);
-      if (!resolvedId) {
-        throw { code: 'NOT_FOUND', message: 'Document not found' };
-      }
+  // static async updateItemsWithMerge(id: string, payload: UpdateItemsPayloadV2): Promise<UpdateResult> {
+  //   return await prisma.$transaction(async (tx) => {
+  //     // 1. Разрешаем идентификатор (id | externalId | onecNumber) -> внутренний id
+  //     const resolvedId = await InventoryServiceV2.resolveDocumentId(tx, id);
+  //     if (!resolvedId) {
+  //       throw { code: 'NOT_FOUND', message: 'Document not found' };
+  //     }
 
-      // 2. Оптимистическая блокировка: атомарно инкрементируем версию, если она совпадает с переданной
-    //   const bump = await tx.inventoryDocument.updateMany({
-    //     where: { id: resolvedId, version: payload.version },
-    //     data: { version: { increment: 1 } },
-    //   });
-    //   if (bump.count === 0) {
-    //     const current = await tx.inventoryDocument.findUnique({
-    //       where: { id: resolvedId },
-    //       select: { version: true },
-    //     });
-    //     throw {
-    //       code: 'CONFLICT',
-    //       message: `Document version mismatch. Current ${current?.version}, provided ${payload.version}`,
-    //     };
-    //   }
+  //     // 2. Оптимистическая блокировка: атомарно инкрементируем версию, если она совпадает с переданной
+  //   //   const bump = await tx.inventoryDocument.updateMany({
+  //   //     where: { id: resolvedId, version: payload.version },
+  //   //     data: { version: { increment: 1 } },
+  //   //   });
+  //   //   if (bump.count === 0) {
+  //   //     const current = await tx.inventoryDocument.findUnique({
+  //   //       where: { id: resolvedId },
+  //   //       select: { version: true },
+  //   //     });
+  //   //     throw {
+  //   //       code: 'CONFLICT',
+  //   //       message: `Document version mismatch. Current ${current?.version}, provided ${payload.version}`,
+  //   //     };
+  //   //   }
 
-      // Загружаем документ после успешного bump
-      const document = await tx.inventoryDocument.findUnique({
-        where: { id: resolvedId },
-        include: { items: true },
-      });
-      if (!document) {
-        throw { code: 'NOT_FOUND', message: 'Document not found' };
-      }
+  //     // Загружаем документ после успешного bump
+  //     const document = await tx.inventoryDocument.findUnique({
+  //       where: { id: resolvedId },
+  //       include: { items: true },
+  //     });
+  //     if (!document) {
+  //       throw { code: 'NOT_FOUND', message: 'Document not found' };
+  //     }
 
-  let appliedChanges = 0;
+  // let appliedChanges = 0;
 
-      // 2. Обрабатываем каждое изменение
-      for (const itemUpdate of payload.items) {
-        let targetItem: any;
+  //     // 2. Обрабатываем каждое изменение
+  //     for (const itemUpdate of payload.items) {
+  //       let targetItem: any;
 
-        // Находим целевую строку
-        if (itemUpdate.sku) {
-          targetItem = document.items.find(item => item.sku === itemUpdate.sku);
-  } else if (itemUpdate.barcode) {
-          const barcode = await tx.inventoryItemBarcode.findUnique({
-            where: {
-              documentId_barcode: {
-    documentId: document.id,
-                barcode: itemUpdate.barcode,
-              },
-            },
-          });
-          if (barcode) {
-            targetItem = document.items.find(item => item.id === barcode.itemId);
-          }
-        }
+  //       // Находим целевую строку
+  //       if (itemUpdate.sku) {
+  //         targetItem = document.items.find(item => item.sku === itemUpdate.sku);
+  // } else if (itemUpdate.barcode) {
+  //         const barcode = await tx.inventoryItemBarcode.findUnique({
+  //           where: {
+  //             documentId_barcode: {
+  //   documentId: document.id,
+  //               barcode: itemUpdate.barcode,
+  //             },
+  //           },
+  //         });
+  //         if (barcode) {
+  //           targetItem = document.items.find(item => item.id === barcode.itemId);
+  //         }
+  //       }
 
-        if (!targetItem) {
-          continue; // Пропускаем несуществующие строки
-        }
+  //       if (!targetItem) {
+  //         continue; // Пропускаем несуществующие строки
+  //       }
 
-    // Конфликты не обрабатываем
+  //   // Конфликты не обрабатываем
 
-        // 4. Применяем изменения (стратегия "последний побеждает")
-        const updateData: any = {};
-        let newCounted: Prisma.Decimal | undefined;
-        let newCorrected: Prisma.Decimal | undefined;
-        let hasUpdates = false;
+  //       // 4. Применяем изменения (стратегия "последний побеждает")
+  //       const updateData: any = {};
+  //       let newCounted: Prisma.Decimal | undefined;
+  //       let newCorrected: Prisma.Decimal | undefined;
+  //       let hasUpdates = false;
 
-        if (itemUpdate.countedQty !== undefined) {
-          newCounted = new Prisma.Decimal(itemUpdate.countedQty);
-          hasUpdates = true;
-        }
+  //       if (itemUpdate.countedQty !== undefined) {
+  //         newCounted = new Prisma.Decimal(itemUpdate.countedQty);
+  //         hasUpdates = true;
+  //       }
 
-        if (itemUpdate.correctedQty !== undefined) {
-          newCorrected = new Prisma.Decimal(itemUpdate.correctedQty);
-          hasUpdates = true;
-        }
+  //       if (itemUpdate.correctedQty !== undefined) {
+  //         newCorrected = new Prisma.Decimal(itemUpdate.correctedQty);
+  //         hasUpdates = true;
+  //       }
         
-        if (itemUpdate.note !== undefined) {
-          updateData.note = itemUpdate.note;
-          hasUpdates = true;
-        }
+  //       if (itemUpdate.note !== undefined) {
+  //         updateData.note = itemUpdate.note;
+  //         hasUpdates = true;
+  //       }
 
-        if (hasUpdates) {
-          // Только логируем изменения устройства, inventoryItem не обновляем
-          await (tx as any).inventoryItemChange.create({
-            data: {
+  //       if (hasUpdates) {
+  //         // Только логируем изменения устройства, inventoryItem не обновляем
+  //         await (tx as any).inventoryItemChange.create({
+  //           data: {
+  //             documentId: document.id,
+  //             itemId: targetItem.id,
+  //             deviceId: payload.deviceId || 'unknown',
+  //             countedQty: newCounted ?? null,
+  //             correctedQty: newCorrected ?? null,
+  //             note: itemUpdate.note,
+  //           },
+  //         });
+  //         appliedChanges++;
+  //       }
+  //     }
+
+  //     return {
+  //       success: true,
+  //       version: document.version,
+  //       appliedChanges,
+  //     };
+  //   }, {
+  //     maxWait: 10000,
+  //     timeout: 15000,
+  //   });
+  // }
+  static async updateItemsWithMerge(id: string, payload: UpdateItemsPayloadV2): Promise<UpdateResult> {
+  const decEq = (a?: Prisma.Decimal | null, b?: Prisma.Decimal | null) => {
+    if (a == null && b == null) return true;
+    if (a == null || b == null) return false;
+    return new Prisma.Decimal(a).equals(new Prisma.Decimal(b));
+  };
+
+  return await prisma.$transaction(async (tx) => {
+    // 1) Разрешаем идентификатор
+    const resolvedId = await InventoryServiceV2.resolveDocumentId(tx, id);
+    if (!resolvedId) {
+      throw { code: 'NOT_FOUND', message: 'Document not found' };
+    }
+
+    // 2) Загружаем документ
+    const document = await tx.inventoryDocument.findUnique({
+      where: { id: resolvedId },
+      include: { items: true },
+    });
+    if (!document) {
+      throw { code: 'NOT_FOUND', message: 'Document not found' };
+    }
+
+    let appliedChanges = 0;
+
+    // 3) Обрабатываем изменения
+    for (const itemUpdate of payload.items) {
+      let targetItem: any;
+
+      // Поиск строки по sku или barcode
+      if (itemUpdate.sku) {
+        targetItem = document.items.find((it) => it.sku === itemUpdate.sku);
+      } else if (itemUpdate.barcode) {
+        const barcode = await tx.inventoryItemBarcode.findUnique({
+          where: {
+            documentId_barcode: {
               documentId: document.id,
-              itemId: targetItem.id,
-              deviceId: payload.deviceId || 'unknown',
-              countedQty: newCounted ?? null,
-              correctedQty: newCorrected ?? null,
-              note: itemUpdate.note,
+              barcode: itemUpdate.barcode,
             },
-          });
-          appliedChanges++;
+          },
+        });
+        if (barcode) {
+          targetItem = document.items.find((it) => it.id === barcode.itemId);
         }
       }
 
-      return {
-        success: true,
-        version: document.version,
-        appliedChanges,
-      };
-    }, {
-      maxWait: 10000,
-      timeout: 15000,
-    });
-  }
+      if (!targetItem) continue;
+
+      // Новые значения (могут быть undefined => не трогаем поле)
+      const incomingCounted = (itemUpdate.countedQty !== undefined)
+        ? new Prisma.Decimal(itemUpdate.countedQty)
+        : undefined;
+
+      const incomingCorrected = (itemUpdate.correctedQty !== undefined)
+        ? new Prisma.Decimal(itemUpdate.correctedQty)
+        : undefined;
+
+      // Текущее состояние
+      const currentCounted: Prisma.Decimal | null = targetItem.countedQty ?? null;
+      const currentCorrected: Prisma.Decimal | null = targetItem.correctedQty ?? null;
+
+      // Проверяем, реально ли меняются количества
+      const countedWillChange =
+        incomingCounted !== undefined && !decEq(incomingCounted, currentCounted);
+
+      const correctedWillChange =
+        incomingCorrected !== undefined && !decEq(incomingCorrected, currentCorrected);
+
+      const noteWillChange =
+        itemUpdate.note !== undefined && itemUpdate.note !== targetItem.note;
+
+      // Если ничего по количествам не меняется и примечание не меняется — пропускаем
+      if (!countedWillChange && !correctedWillChange && !noteWillChange) {
+        continue;
+      }
+
+      // Обновляем сам item только теми полями, которые действительно меняются
+      const itemUpdateData: any = {};
+      if (countedWillChange) itemUpdateData.countedQty = incomingCounted;
+      if (correctedWillChange) itemUpdateData.correctedQty = incomingCorrected;
+      if (noteWillChange) itemUpdateData.note = itemUpdate.note;
+
+      if (Object.keys(itemUpdateData).length > 0) {
+        await tx.inventoryItem.update({
+          where: { id: targetItem.id },
+          data: itemUpdateData,
+        });
+      }
+
+      // Логируем изменение (записываем только реально изменившиеся количества;
+      // если количество не менялось, кладём null, чтобы журнал не «забивал» одинаковыми значениями)
+      await (tx as any).inventoryItemChange.create({
+        data: {
+          documentId: document.id,
+          itemId: targetItem.id,
+          deviceId: payload.deviceId || 'unknown',
+          countedQty: countedWillChange ? incomingCounted! : null,
+          correctedQty: correctedWillChange ? incomingCorrected! : null,
+          note: noteWillChange ? itemUpdate.note! : null,
+        },
+      });
+
+      appliedChanges++;
+    }
+
+    return {
+      success: true,
+      version: document.version, // если нужен bump версии — раскомментируй ваш блок оптимистической блокировки
+      appliedChanges,
+    };
+  }, {
+    maxWait: 10000,
+    timeout: 15000,
+  });
+}
 
   // Метод для получения изменений с timestamp
   static async getDocumentWithTimestamps(id: string) {

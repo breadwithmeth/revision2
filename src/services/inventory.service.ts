@@ -346,6 +346,7 @@ export class InventoryService {
         }
         const deltaFinal = correctedSum.sub(item.qtyFrom1C);
         return {
+          name: item.name,
           sku: item.sku,
           unit: item.unit,
           correctedQty: correctedSum.toString(),
