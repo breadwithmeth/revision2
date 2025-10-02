@@ -12,7 +12,11 @@ import { warehouseListRoute } from './routes/warehouse.list.js';
 
 const PORT = parseInt(process.env.PORT || '3000');
 
-const fastify = Fastify({ logger: false });
+const fastify = Fastify({
+  logger: false,
+  // Увеличенный лимит тела (по умолчанию ~1MB). Ставим 25MB, можно настроить через ENV.
+  bodyLimit: parseInt(process.env.BODY_LIMIT_BYTES || `${60 * 1024 * 1024}`),
+});
 
 // CORS: разрешить запросы с любого сайта (без внешних зависимостей)
 fastify.addHook('onSend', async (request, reply, payload) => {
