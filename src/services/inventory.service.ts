@@ -52,6 +52,7 @@ export class InventoryService {
 
   static async importFrom1C(payload: ImportPayload) {
     const startTime = Date.now();
+    const importTimeout = parseInt(process.env.IMPORT_TX_TIMEOUT_MS || '120000');
     const res = await prisma.$transaction(async (tx) => {
       // 1) Склад
       const warehouse = await tx.warehouse.upsert({
@@ -79,23 +80,28 @@ export class InventoryService {
         },
       });
 
-      // 3) Позиции и штрихкоды
-      for (const item of payload.items) {
-        const existing = await tx.inventoryItem.findUnique({
-          where: { documentId_sku: { documentId: document.id, sku: item.sku } },
-        });
+      // 3) Предзагрузка существующих позиций одним запросом
+      const skus = payload.items.map(i => i.sku);
+      const existingItems = await tx.inventoryItem.findMany({
+        where: { documentId: document.id, sku: { in: skus } },
+        select: { id: true, sku: true },
+      });
+      const existingMap = new Map(existingItems.map(i => [i.sku, i.id]));
 
+      // 4) Обработка позиций (обновления и создания)
+      for (const item of payload.items) {
+        const existingId = existingMap.get(item.sku);
         let itemId: string;
-        if (existing) {
-          const updated = await tx.inventoryItem.update({
-            where: { id: existing.id },
+        if (existingId) {
+          await tx.inventoryItem.update({
+            where: { id: existingId },
             data: {
               name: item.name,
               unit: item.unit,
               qtyFrom1C: new Prisma.Decimal(item.qtyFrom1C),
             },
           });
-          itemId = updated.id;
+          itemId = existingId;
         } else {
           const created = await tx.inventoryItem.create({
             data: {
@@ -106,10 +112,10 @@ export class InventoryService {
               qtyFrom1C: new Prisma.Decimal(item.qtyFrom1C),
             },
           });
-          itemId = created.id;
+            itemId = created.id;
         }
 
-        // Пересоздаём штрихкоды для строки
+        // Пересоздание штрихкодов (удаляем только если позиция существовала или пришли новые баркоды)
         await tx.inventoryItemBarcode.deleteMany({ where: { itemId } });
         if (item.barcodes.length > 0) {
           const toCreate = item.barcodes.map((b, idx) => ({
@@ -127,7 +133,7 @@ export class InventoryService {
         include: { warehouse: true, items: { include: { barcodes: true } } },
       });
       return result!;
-    }, { maxWait: 10000, timeout: 30000 });
+    }, { maxWait: 15000, timeout: importTimeout });
 
     const took = Date.now() - startTime;
     console.log(`Import of ${payload.externalId} completed in ${took} ms`);
